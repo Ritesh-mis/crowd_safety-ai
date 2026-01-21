@@ -6,6 +6,13 @@ import cv2
 import numpy as np
 import time
 from pathlib import Path
+import platform
+
+# Optional Windows sound support
+try:
+    import winsound
+except ImportError:
+    winsound = None
 
 # Your existing function-based imports
 from video_loader import VideoLoader
@@ -41,7 +48,11 @@ class EnhancedCrowdSafetySystem:
         self.density_history = []
         self.risk_history = []
         self.motion_history = []
-        
+
+        # Audio alert control
+        self.last_alert_sound_time = 0.0
+        self.alert_sound_cooldown = 3.0  # seconds between beeps (avoid spam)
+    
     def calculate_fps(self):
         """Calculate current FPS"""
         current_time = time.time()
@@ -53,34 +64,69 @@ class EnhancedCrowdSafetySystem:
             self.prev_time = current_time
             
         return self.fps
-    
+
+    # -------------------- AUDIO ALERT HELPER --------------------
+
+    def play_alert_sound(self, severity: str):
+        """
+        Play a short audio alert when risk is high / anomaly detected.
+        Uses a cooldown to avoid beeping every frame.
+        severity: 'high' | 'medium' | 'low'
+        """
+        now = time.time()
+        if now - self.last_alert_sound_time < self.alert_sound_cooldown:
+            return  # too soon, skip this beep
+
+        self.last_alert_sound_time = now
+
+        # Windows-only audio using winsound
+        if winsound is not None and platform.system() == "Windows":
+            if severity == "high":
+                # Higher frequency, longer duration
+                winsound.Beep(1000, 700)  # freq, duration ms
+            elif severity == "medium":
+                winsound.Beep(800, 500)
+            else:
+                winsound.Beep(600, 300)
+        else:
+            # Fallback: just print a console marker
+            print(f"[ALERT AUDIO] Severity: {severity.upper()}")
+
+    # -------------------- ALERT LOGIC --------------------
+
     def generate_alerts(self, density, risk_score, anomaly_detected, motion_magnitude):
-        """Generate alerts based on current conditions"""
+        """Generate alerts based on current conditions and trigger audio."""
         # Clear old alerts
         self.dashboard.clear_old_alerts(max_age=5.0)
         
         # Convert risk_score (0-1) for comparisons
         risk_normalized = risk_score if isinstance(risk_score, (int, float)) else 0.5
+
+        # Track whether we should play an audio alert this frame
+        audio_severity = None
         
-        # Critical risk alert
+        # Critical / high risk alert
         if risk_normalized > 0.85:
             self.dashboard.add_alert(
                 'CRITICAL RISK', 
                 'high',
                 f'EMERGENCY: Risk level at {risk_normalized:.0%}!'
             )
+            audio_severity = "high"
         elif risk_normalized > 0.7:
             self.dashboard.add_alert(
                 'High Risk',
                 'high',
                 f'High crowd risk detected: {risk_normalized:.0%}'
             )
+            audio_severity = audio_severity or "high"
         elif risk_normalized > 0.5:
             self.dashboard.add_alert(
                 'Moderate Risk',
                 'medium',
                 f'Caution advised: Risk at {risk_normalized:.0%}'
             )
+            audio_severity = audio_severity or "medium"
         
         # Density alerts
         if density > 0.8:
@@ -89,6 +135,7 @@ class EnhancedCrowdSafetySystem:
                 'high',
                 f'Severe crowding: {density:.0%} capacity'
             )
+            audio_severity = audio_severity or "high"
         
         # Motion alerts
         if motion_magnitude > 15.0:  # Adjusted threshold for your motion values
@@ -97,6 +144,7 @@ class EnhancedCrowdSafetySystem:
                 'medium',
                 f'Intense movement: {motion_magnitude:.1f} px/frame'
             )
+            audio_severity = audio_severity or "medium"
         
         # Anomaly alert
         if anomaly_detected:
@@ -105,6 +153,11 @@ class EnhancedCrowdSafetySystem:
                 'medium',
                 'Unusual crowd behavior pattern'
             )
+            audio_severity = audio_severity or "medium"
+
+        # Finally, play audio if needed
+        if audio_severity is not None:
+            self.play_alert_sound(audio_severity)
     
     def normalize_risk(self, risk_str, density, motion):
         """Convert risk string to normalized 0-1 value"""
@@ -147,6 +200,7 @@ class EnhancedCrowdSafetySystem:
         print("-" * 50)
         
         # Setup video writer if output path provided
+        out = None
         if output_path:
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             # Dashboard output is 1920x1080
@@ -214,7 +268,7 @@ class EnhancedCrowdSafetySystem:
                     fps=current_fps
                 )
                 
-                # Generate alerts
+                # Generate alerts (will also trigger audio if needed)
                 self.generate_alerts(
                     density_value, 
                     risk_normalized, 
@@ -254,7 +308,7 @@ class EnhancedCrowdSafetySystem:
                         cv2.waitKey(0)
                 
                 # Write to output
-                if output_path:
+                if out is not None:
                     out.write(dashboard_frame)
                 
                 # Progress indicator
@@ -270,7 +324,7 @@ class EnhancedCrowdSafetySystem:
         finally:
             # Cleanup
             video_loader.release()
-            if output_path:
+            if out is not None:
                 out.release()
             cv2.destroyAllWindows()
             
